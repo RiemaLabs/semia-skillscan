@@ -465,6 +465,39 @@ class StratificationTests(unittest.TestCase):
 
 
 class EvaluatorTests(unittest.TestCase):
+    def test_evaluate_times_out_when_deadline_already_expired(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "p.dl"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text(
+            """
+            .decl seed(x: symbol)
+            seed("x").
+            """,
+            encoding="utf-8",
+        )
+        program = parse_dl_file(path)
+
+        with self.assertRaisesRegex(EvalError, "timed out"):
+            evaluate(program, timeout_seconds=0)
+
+    def test_evaluate_rejects_excessive_derived_tuples(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "p.dl"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text(
+            """
+            .decl seed(x: symbol)
+            .decl derived(x: symbol)
+            seed("a").
+            seed("b").
+            derived(x) :- seed(x).
+            """,
+            encoding="utf-8",
+        )
+        program = parse_dl_file(path)
+
+        with self.assertRaisesRegex(EvalError, "more than 3 tuples"):
+            evaluate(program, max_derived_tuples=3)
+
     def test_transitive_closure(self) -> None:
         path = Path(tempfile.mkdtemp()) / "p.dl"
         self.addCleanup(shutil.rmtree, path.parent)

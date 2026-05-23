@@ -84,6 +84,30 @@ class DetectorReportTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.backend, "builtin")
 
+    def test_builtin_detector_passes_timeout_to_evaluator(self) -> None:
+        previous_backend = os.environ.get("SEMIA_DETECTOR_BACKEND")
+        os.environ["SEMIA_DETECTOR_BACKEND"] = "builtin"
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                facts = Path(td) / "facts.dl"
+                facts.write_text('skill("demo").\n', encoding="utf-8")
+                output_dir = Path(td) / "out"
+                with mock.patch.object(
+                    detector_module,
+                    "run_evaluator",
+                    return_value=detector_module.EvalResult(),
+                ) as evaluator:
+                    result = run_detector(facts, output_dir, timeout_seconds=7)
+        finally:
+            if previous_backend is None:
+                os.environ.pop("SEMIA_DETECTOR_BACKEND", None)
+            else:
+                os.environ["SEMIA_DETECTOR_BACKEND"] = previous_backend
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.backend, "builtin")
+        evaluator.assert_called_once_with(facts, output_dir, timeout_seconds=7)
+
     def test_render_markdown_report(self) -> None:
         check = check_program('skill("demo").\n')
         markdown = render_markdown_report(
@@ -206,6 +230,7 @@ class DetectorReportTests(unittest.TestCase):
             def _fake_run(cmd, **kwargs):
                 captured["cmd"] = cmd
                 captured["cwd"] = kwargs.get("cwd")
+                captured["timeout"] = kwargs.get("timeout")
                 return _FakeCompleted()
 
             with (
@@ -217,7 +242,7 @@ class DetectorReportTests(unittest.TestCase):
                 previous_backend = os.environ.get("SEMIA_DETECTOR_BACKEND")
                 os.environ["SEMIA_DETECTOR_BACKEND"] = "souffle"
                 try:
-                    result = run_detector(facts, output_dir)
+                    result = run_detector(facts, output_dir, timeout_seconds=7)
                 finally:
                     if previous_backend is None:
                         os.environ.pop("SEMIA_DETECTOR_BACKEND", None)
@@ -227,6 +252,7 @@ class DetectorReportTests(unittest.TestCase):
             self.assertEqual(result.status, "ok")
             self.assertEqual(result.backend, "souffle")
             self.assertEqual(captured["cwd"], str(facts.parent))
+            self.assertEqual(captured["timeout"], 7)
 
 
 class RenderMarkdownReportTests(unittest.TestCase):

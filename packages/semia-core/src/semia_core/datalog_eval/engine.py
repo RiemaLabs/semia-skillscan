@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -16,6 +17,25 @@ class EvalError(RuntimeError):
     """Raised on stratification or runtime evaluation problems."""
 
 
+DEFAULT_MAX_DERIVED_TUPLES = 1_000_000
+
+
+def _deadline(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    return time.monotonic() + timeout_seconds
+
+
+def _check_timeout(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise EvalError("Datalog evaluation timed out")
+
+
+def _check_tuple_budget(count: int, max_derived_tuples: int | None) -> None:
+    if max_derived_tuples is not None and count > max_derived_tuples:
+        raise EvalError(f"Datalog evaluation derived more than {max_derived_tuples} tuples")
+
+
 @dataclass
 class EvalResult:
     relations: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
@@ -23,15 +43,28 @@ class EvalResult:
     strata: tuple[tuple[str, ...], ...] = ()
 
 
-def run_evaluator(facts_path: Path | str, output_dir: Path | str) -> EvalResult:
+def run_evaluator(
+    facts_path: Path | str,
+    output_dir: Path | str,
+    *,
+    timeout_seconds: float | None = None,
+    max_derived_tuples: int | None = DEFAULT_MAX_DERIVED_TUPLES,
+) -> EvalResult:
     """Parse ``facts_path`` (with rules included) and write Soufflé-shaped CSVs."""
 
+    deadline = _deadline(timeout_seconds)
     program = parse_dl_file(facts_path)
-    relations = evaluate(program)
+    _check_timeout(deadline)
+    relations = _evaluate(
+        program,
+        deadline=deadline,
+        max_derived_tuples=max_derived_tuples,
+    )
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     output_files: dict[str, Path] = {}
     for pred in sorted(program.outputs):
+        _check_timeout(deadline)
         path = out / f"{pred}.csv"
         rows = sorted(relations.get(pred, set()))
         with path.open("w", encoding="utf-8") as handle:
@@ -43,9 +76,28 @@ def run_evaluator(facts_path: Path | str, output_dir: Path | str) -> EvalResult:
     return EvalResult(relations=relations, output_files=output_files, strata=strata)
 
 
-def evaluate(program: Program) -> dict[str, set[tuple[str, ...]]]:
+def evaluate(
+    program: Program,
+    *,
+    timeout_seconds: float | None = None,
+    max_derived_tuples: int | None = DEFAULT_MAX_DERIVED_TUPLES,
+) -> dict[str, set[tuple[str, ...]]]:
     """Run stratified semi-naive evaluation; return all derived relations."""
 
+    return _evaluate(
+        program,
+        deadline=_deadline(timeout_seconds),
+        max_derived_tuples=max_derived_tuples,
+    )
+
+
+def _evaluate(
+    program: Program,
+    *,
+    deadline: float | None,
+    max_derived_tuples: int | None,
+) -> dict[str, set[tuple[str, ...]]]:
+    _check_timeout(deadline)
     db: dict[str, set[tuple[str, ...]]] = {pred: set(rows) for pred, rows in program.facts.items()}
     for pred in program.decls:
         db.setdefault(pred, set())
@@ -55,28 +107,40 @@ def evaluate(program: Program) -> dict[str, set[tuple[str, ...]]]:
         rules_by_head[rule.head.relation].append(rule)
 
     for stratum in _strata_predicates(program):
+        _check_timeout(deadline)
         active_rules = [r for pred in stratum for r in rules_by_head.get(pred, [])]
         for pred in stratum:
             db.setdefault(pred, set())
-        _evaluate_stratum(active_rules, db)
+        _evaluate_stratum(active_rules, db, deadline, max_derived_tuples)
 
     return db
 
 
-def _evaluate_stratum(rules: list[Rule], db: dict[str, set[tuple[str, ...]]]) -> None:
+def _evaluate_stratum(
+    rules: list[Rule],
+    db: dict[str, set[tuple[str, ...]]],
+    deadline: float | None,
+    max_derived_tuples: int | None,
+) -> None:
     if not rules:
         return
+    derived_count = sum(len(rows) for rows in db.values())
+    _check_tuple_budget(derived_count, max_derived_tuples)
     while True:
+        _check_timeout(deadline)
         snapshot: dict[str, set[tuple[str, ...]]] = {
             rel: frozenset(rows) for rel, rows in db.items()
         }
         derived_any = False
         for rule in rules:
+            _check_timeout(deadline)
             target = db.setdefault(rule.head.relation, set())
-            for binding in _match_body(rule.body, snapshot):
+            for binding in _match_body(rule.body, snapshot, deadline):
                 tup = _ground_args(rule.head.args, binding)
                 if tup not in target:
                     target.add(tup)
+                    derived_count += 1
+                    _check_tuple_budget(derived_count, max_derived_tuples)
                     derived_any = True
         if not derived_any:
             return
@@ -85,8 +149,9 @@ def _evaluate_stratum(rules: list[Rule], db: dict[str, set[tuple[str, ...]]]) ->
 def _match_body(
     body: tuple[Atom, ...],
     db: dict[str, set[tuple[str, ...]]],
+    deadline: float | None,
 ) -> Iterator[dict[str, str]]:
-    yield from _match(body, 0, {}, db)
+    yield from _match(body, 0, {}, db, deadline)
 
 
 def _match(
@@ -94,17 +159,19 @@ def _match(
     idx: int,
     binding: dict[str, str],
     db: dict[str, set[tuple[str, ...]]],
+    deadline: float | None,
 ) -> Iterator[dict[str, str]]:
+    _check_timeout(deadline)
     if idx == len(body):
         yield binding
         return
     atom = body[idx]
     if atom.kind == "builtin":
-        yield from _match_builtin(atom, idx, binding, body, db)
+        yield from _match_builtin(atom, idx, binding, body, db, deadline)
         return
     if atom.negated:
-        if not _exists_match(atom.args, db.get(atom.relation, set()), binding):
-            yield from _match(body, idx + 1, binding, db)
+        if not _exists_match(atom.args, db.get(atom.relation, set()), binding, deadline):
+            yield from _match(body, idx + 1, binding, db, deadline)
         return
 
     relation_rows = db.get(atom.relation)
@@ -114,13 +181,14 @@ def _match(
         new_binding = _try_bind(atom.args, tup, binding)
         if new_binding is None:
             continue
-        yield from _match(body, idx + 1, new_binding, db)
+        yield from _match(body, idx + 1, new_binding, db, deadline)
 
 
 def _exists_match(
     args: tuple[Term, ...],
     rows: set[tuple[str, ...]],
     binding: dict[str, str],
+    deadline: float | None,
 ) -> bool:
     """Check whether any tuple in ``rows`` is consistent with ``args``.
 
@@ -176,14 +244,16 @@ def _match_builtin(
     binding: dict[str, str],
     body: tuple[Atom, ...],
     db: dict[str, set[tuple[str, ...]]],
+    deadline: float | None,
 ) -> Iterator[dict[str, str]]:
+    _check_timeout(deadline)
     if atom.relation == "contains":
         sub = _resolve(atom.args[0], binding)
         whole = _resolve(atom.args[1], binding)
         if sub is None or whole is None:
             raise EvalError("contains/2 requires both arguments to be bound")
         if sub in whole:
-            yield from _match(body, idx + 1, binding, db)
+            yield from _match(body, idx + 1, binding, db, deadline)
         return
     if atom.relation in ("eq", "neq"):
         a_val = _resolve(atom.args[0], binding)
@@ -191,27 +261,27 @@ def _match_builtin(
         if atom.relation == "eq":
             if a_val is not None and b_val is not None:
                 if a_val == b_val:
-                    yield from _match(body, idx + 1, binding, db)
+                    yield from _match(body, idx + 1, binding, db, deadline)
                 return
             if a_val is None and b_val is not None:
                 if not atom.args[0].is_var:
                     return
                 new_binding = dict(binding)
                 new_binding[atom.args[0].value] = b_val
-                yield from _match(body, idx + 1, new_binding, db)
+                yield from _match(body, idx + 1, new_binding, db, deadline)
                 return
             if b_val is None and a_val is not None:
                 if not atom.args[1].is_var:
                     return
                 new_binding = dict(binding)
                 new_binding[atom.args[1].value] = a_val
-                yield from _match(body, idx + 1, new_binding, db)
+                yield from _match(body, idx + 1, new_binding, db, deadline)
                 return
             raise EvalError("equality between two unbound variables is not supported")
         if a_val is None or b_val is None:
             raise EvalError("disequality requires both arguments to be bound")
         if a_val != b_val:
-            yield from _match(body, idx + 1, binding, db)
+            yield from _match(body, idx + 1, binding, db, deadline)
         return
     raise EvalError(f"unknown builtin: {atom.relation!r}")
 
