@@ -46,7 +46,7 @@ def run_detector(
     facts_path: str | Path,
     output_dir: str | Path,
     *,
-    timeout_seconds: int = 120,
+    timeout_seconds: float | None = 120,
 ) -> DetectorResult:
     """Run the SDL detector over an assembled facts/rules file."""
 
@@ -69,14 +69,14 @@ def run_detector(
                 message="Souffle binary not found; set SEMIA_SOUFFLE_BIN or install souffle on PATH.",
             )
 
-    return _run_builtin(facts_path, output_dir)
+    return _run_builtin(facts_path, output_dir, timeout_seconds)
 
 
 def _run_souffle(
     souffle_bin: str,
     facts_path: str | Path,
     output_dir: str | Path,
-    timeout_seconds: int,
+    timeout_seconds: float | None,
 ) -> DetectorResult:
     facts = Path(facts_path)
     out = Path(output_dir)
@@ -114,11 +114,15 @@ def _run_souffle(
     )
 
 
-def _run_builtin(facts_path: str | Path, output_dir: str | Path) -> DetectorResult:
+def _run_builtin(
+    facts_path: str | Path,
+    output_dir: str | Path,
+    timeout_seconds: float | None,
+) -> DetectorResult:
     facts = Path(facts_path)
     out = Path(output_dir)
     try:
-        result: EvalResult = run_evaluator(facts, out)
+        result: EvalResult = run_evaluator(facts, out, timeout_seconds=timeout_seconds)
     except (ParseError, EvalError, FileNotFoundError, OSError) as exc:
         return DetectorResult(
             status="failed",
