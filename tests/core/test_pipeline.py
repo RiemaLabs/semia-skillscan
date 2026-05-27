@@ -631,7 +631,7 @@ class HostileFenceAndProvenanceTests(unittest.TestCase):
                 result["synthesized_facts_sha256"],
             )
 
-    def test_evidence_taint_threshold_disabled_by_default(self) -> None:
+    def test_evidence_taint_threshold_enabled_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             skill_dir = Path(td) / "skill"
             skill_dir.mkdir()
@@ -640,7 +640,7 @@ class HostileFenceAndProvenanceTests(unittest.TestCase):
             prepare(skill_dir, run_dir=run_dir)
             extract_baseline(run_dir)
             result = check_facts(run_dir)
-            self.assertEqual(result["evidence_taint_threshold"], 0.0)
+            self.assertEqual(result["evidence_taint_threshold"], 0.1)
 
     def test_evidence_taint_threshold_blocks_hallucinated_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -29,7 +29,7 @@ from .facts import parse_facts
 from .prepare import build_prepare_bundle
 from .report import render_markdown_report
 
-DEFAULT_EVIDENCE_TAINT_THRESHOLD = 0.0  # 0 disables the hard check; plugin mode opts in.
+DEFAULT_EVIDENCE_TAINT_THRESHOLD = 0.1
 
 ARTIFACT_PREPARED_SKILL = "prepared_skill.md"
 ARTIFACT_PREPARE_METADATA = "prepare_metadata.json"

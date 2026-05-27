@@ -509,7 +509,7 @@ def _add_taint_threshold_option(parser: argparse.ArgumentParser) -> None:
         dest="evidence_taint_threshold",
         type=float,
         help="reject the program when evidence_match_rate < THRESHOLD (in [0, 1]). "
-        "Defaults to SEMIA_EVIDENCE_TAINT_THRESHOLD env or 0 (disabled). "
+        "Defaults to SEMIA_EVIDENCE_TAINT_THRESHOLD env or 0.1. "
         "Recommended 0.5 for plugin mode where host-session synthesis is harder to bound.",
     )
 
